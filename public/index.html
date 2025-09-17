@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Worker Types Demo - Complex Object Logging</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .worker-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 5px;
+        }
+        .worker-section h2 {
+            margin-top: 0;
+            color: #555;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .info { background-color: #d1ecf1; color: #0c5460; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Worker Types Demo</h1>
+        <p>This demo shows how to log complex objects to the console in all three types of workers. Open your browser's developer console to see the logged objects.</p>
+        
+        <div class="worker-section">
+            <h2>1. Web Worker</h2>
+            <p>A dedicated worker that runs in the background, separate from the main thread.</p>
+            <button onclick="testWebWorker()">Test Web Worker</button>
+            <div id="webWorkerStatus" class="status info">Click the button to test Web Worker</div>
+        </div>
+        
+        <div class="worker-section">
+            <h2>2. Service Worker</h2>
+            <p>A worker that acts as a proxy between your app and network, enabling offline functionality.</p>
+            <button onclick="testServiceWorker()">Register & Test Service Worker</button>
+            <div id="serviceWorkerStatus" class="status info">Click the button to test Service Worker</div>
+        </div>
+        
+        <div class="worker-section">
+            <h2>3. Shared Worker</h2>
+            <p>A worker that can be accessed by multiple scripts running in different windows/tabs.</p>
+            <button onclick="testSharedWorker()">Test Shared Worker</button>
+            <div id="sharedWorkerStatus" class="status info">Click the button to test Shared Worker</div>
+        </div>
+    </div>
+
+    <script>
+        // Complex object to be logged in all workers
+        const complexObject = {
+            timestamp: new Date().toISOString(),
+            user: {
+                id: 12345,
+                name: "John Doe",
+                email: "john.doe@example.com",
+                preferences: {
+                    theme: "dark",
+                    notifications: true,
+                    language: "en-US"
+                }
+            },
+            data: {
+                metrics: [
+                    { name: "pageViews", value: 1542, trend: "up" },
+                    { name: "uniqueUsers", value: 847, trend: "stable" },
+                    { name: "bounceRate", value: 0.23, trend: "down" }
+                ],
+                features: ["analytics", "reporting", "realtime"],
+                config: {
+                    apiVersion: "v2.1",
+                    timeout: 5000,
+                    retries: 3,
+                    endpoints: {
+                        auth: "/api/auth",
+                        data: "/api/data",
+                        upload: "/api/upload"
+                    }
+                }
+            },
+            metadata: {
+                session: "sess_" + Math.random().toString(36).substr(2, 9),
+                userAgent: navigator.userAgent,
+                screen: {
+                    width: screen.width,
+                    height: screen.height,
+                    colorDepth: screen.colorDepth
+                }
+            }
+        };
+
+        // Log complex object in main thread first
+        console.log("🔥 Main Thread - Complex Object:", complexObject);
+
+        // Web Worker
+        function testWebWorker() {
+            const status = document.getElementById('webWorkerStatus');
+            try {
+                const worker = new Worker('web-worker.js');
+                worker.postMessage({ type: 'LOG_OBJECT', data: complexObject });
+                
+                worker.onmessage = function(e) {
+                    if (e.data.type === 'LOGGED') {
+                        status.textContent = '✅ Web Worker successfully logged the complex object to console';
+                        status.className = 'status success';
+                    }
+                };
+                
+                worker.onerror = function(error) {
+                    status.textContent = '❌ Web Worker error: ' + error.message;
+                    status.className = 'status error';
+                };
+            } catch (error) {
+                status.textContent = '❌ Failed to create Web Worker: ' + error.message;
+                status.className = 'status error';
+            }
+        }
+
+        // Service Worker
+        async function testServiceWorker() {
+            const status = document.getElementById('serviceWorkerStatus');
+            
+            if (!('serviceWorker' in navigator)) {
+                status.textContent = '❌ Service Workers not supported in this browser';
+                status.className = 'status error';
+                return;
+            }
+
+            try {
+                const registration = await navigator.serviceWorker.register('service-worker.js');
+                status.textContent = '⏳ Service Worker registered, sending message...';
+                status.className = 'status info';
+
+                // Wait for the service worker to be ready
+                await navigator.serviceWorker.ready;
+
+                // Send message to service worker
+                navigator.serviceWorker.controller?.postMessage({
+                    type: 'LOG_OBJECT',
+                    data: complexObject
+                });
+
+                status.textContent = '✅ Service Worker registered and message sent. Check console for logged object.';
+                status.className = 'status success';
+            } catch (error) {
+                status.textContent = '❌ Service Worker error: ' + error.message;
+                status.className = 'status error';
+            }
+        }
+
+        // Shared Worker
+        function testSharedWorker() {
+            const status = document.getElementById('sharedWorkerStatus');
+            
+            if (!window.SharedWorker) {
+                status.textContent = '❌ Shared Workers not supported in this browser';
+                status.className = 'status error';
+                return;
+            }
+
+            try {
+                const worker = new SharedWorker('shared-worker.js');
+                worker.port.start();
+                
+                worker.port.postMessage({ type: 'LOG_OBJECT', data: complexObject });
+                
+                worker.port.onmessage = function(e) {
+                    if (e.data.type === 'LOGGED') {
+                        status.textContent = '✅ Shared Worker successfully logged the complex object to console';
+                        status.className = 'status success';
+                    }
+                };
+                
+                worker.onerror = function(error) {
+                    status.textContent = '❌ Shared Worker error: ' + error.message;
+                    status.className = 'status error';
+                };
+            } catch (error) {
+                status.textContent = '❌ Failed to create Shared Worker: ' + error.message;
+                status.className = 'status error';
+            }
+        }
+    </script>
+</body>
+</html>
