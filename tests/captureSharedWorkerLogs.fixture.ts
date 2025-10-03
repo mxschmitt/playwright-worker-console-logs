@@ -1,5 +1,12 @@
 import { test as base, type Page, expect } from "@playwright/test";
 
+declare module "@playwright/test" {
+  interface Page {
+    getWorkerLog: () => Promise<any[]>;
+    getWorkerConnection: () => Promise<void>;
+  }
+}
+
 async function sharedWorkerLogsCapture(
   page: Page,
   { captureTimeout }: { captureTimeout: number }
@@ -109,7 +116,6 @@ function () {
     cdp.on("Target.receivedMessageFromTarget", onMsg);
 
     return {
-      sessionId,
       sendToWorker,
       receivedMessageFromTarget,
       materializeArg,
@@ -120,7 +126,7 @@ function () {
   waitForSharedWorkerTarget()
     .then(({ targetId }) => attachToSharedWorker(targetId))
     .then(({ sessionId }) => createCommunicationsFns(sessionId))
-    .then(async ({ sessionId, sendToWorker, receivedMessageFromTarget }) => {
+    .then(async ({ sendToWorker, receivedMessageFromTarget }) => {
       cdp.on("Target.receivedMessageFromTarget", receivedMessageFromTarget);
       await sendToWorker("Runtime.enable");
       await sendToWorker("Log.enable");
@@ -130,11 +136,9 @@ function () {
       console.error("Error during SharedWorker handling:", error);
     });
 
-  return {
-    getWorkerLog: () => workerLogPromise,
-    getWorkerConnection: () =>
-      waitForSharedWorkerTarget().then(() => undefined),
-  };
+  page.getWorkerLog = () => workerLogPromise;
+  page.getWorkerConnection = () =>
+    waitForSharedWorkerTarget().then(() => undefined);
 }
 
 export type CaptureOptions = {
@@ -151,21 +155,15 @@ const test = base.extend<CaptureOptions & CaptureFixtures>({
   captureTimeout: [10_000, { option: true }],
 
   page: async ({ page, captureTimeout }, use) => {
-    const { getWorkerLog, getWorkerConnection } = await sharedWorkerLogsCapture(
-      page,
-      {
-        captureTimeout,
-      }
-    );
-    (page as any).getWorkerLog = getWorkerLog;
-    (page as any).getWorkerConnection = getWorkerConnection;
+    await sharedWorkerLogsCapture(page, {
+      captureTimeout,
+    });
     await use(page);
   },
 
-  getWorkerLog: async ({ page }, use) =>
-    use(() => (page as any).getWorkerLog()),
+  getWorkerLog: async ({ page }, use) => use(() => page.getWorkerLog()),
   getWorkerConnection: async ({ page }, use) =>
-    use(() => (page as any).getWorkerConnection()),
+    use(() => page.getWorkerConnection()),
 });
 
 export { test, expect };
