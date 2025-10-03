@@ -29,8 +29,8 @@ async function sharedWorkerLogsCapture(
   await cdp.send("Target.setDiscoverTargets", { discover: true });
 
   // Wait for the SharedWorker target to be created as a result of the click.
-  const waitForSharedWorkerTarget = () =>
-    new Promise<{ targetId: string }>((resolve, reject) => {
+  const waitForSharedWorkerTarget = new Promise<{ targetId: string }>(
+    (resolve, reject) => {
       const timeoutId = setTimeout(
         () => reject(new Error("Timed out waiting for SharedWorker creation")),
         captureTimeout
@@ -43,7 +43,8 @@ async function sharedWorkerLogsCapture(
         }
       };
       cdp.on("Target.targetCreated", onCreated);
-    });
+    }
+  );
 
   // Attach to that worker with a *nested* session (flatten:false).
   const attachToSharedWorker = async (targetId: string) => {
@@ -131,7 +132,7 @@ async function sharedWorkerLogsCapture(
     };
   };
 
-  waitForSharedWorkerTarget()
+  waitForSharedWorkerTarget
     .then(({ targetId }) => attachToSharedWorker(targetId))
     .then(({ sessionId }) => createCommunicationsFns(sessionId))
     .then(async ({ sendToWorker }) => {
@@ -151,7 +152,7 @@ async function sharedWorkerLogsCapture(
     return current;
   };
   page.getWorkerConnection = () =>
-    waitForSharedWorkerTarget().then(() => undefined);
+    waitForSharedWorkerTarget.then(() => undefined);
 
   return () => {
     shutdownFns.reverse().forEach((fn) => fn());
