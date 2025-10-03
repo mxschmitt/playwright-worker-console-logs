@@ -2,20 +2,28 @@ import { test as base, type Page, expect } from "@playwright/test";
 
 declare module "@playwright/test" {
   interface Page {
-    getWorkerLog: () => Promise<any[]>;
     getWorkerConnection: () => Promise<void>;
+    getWorkerLog: (clearLog?: boolean) => any[];
   }
 }
+
+const functionDeclaration = `function () {
+  try { return JSON.parse(JSON.stringify(this)); }
+  catch (e) { return { __nonSerializable__: true, description: String(this) }; }
+}`;
 
 async function sharedWorkerLogsCapture(
   page: Page,
   { captureTimeout }: { captureTimeout: number }
-) {
-  const { promise: workerLogPromise, resolve: resolveWorkerLog } =
-    Promise.withResolvers<any[]>();
+): Promise<() => void> {
+  const shutdownFns = [] as (() => void)[];
+  const logData = [] as any[];
 
   // Create a new Chrome DevTools Protocol session
   const cdp = await page.context().browser()!.newBrowserCDPSession();
+  shutdownFns.push(() => {
+    cdp.detach();
+  });
 
   // Make Chrome emit Target.targetCreated events.
   await cdp.send("Target.setDiscoverTargets", { discover: true });
@@ -49,6 +57,7 @@ async function sharedWorkerLogsCapture(
   const createCommunicationsFns = (sessionId: string) => {
     let nextMsgId = 0;
     const pending = new Map<number, (res: any) => void>();
+    let consoleChain = Promise.resolve();
 
     const sendToWorker = (method: string, params: any = {}) => {
       const id = ++nextMsgId;
@@ -59,19 +68,40 @@ async function sharedWorkerLogsCapture(
       return new Promise<any>((resolve) => pending.set(id, resolve));
     };
 
-    const receivedMessageFromTarget = ({ sessionId: sid, message }: any) => {
-      if (sid !== sessionId) return;
+    const receivedMessageFromTarget = async ({
+      sessionId: sid,
+      message,
+    }: any) => {
+      console.log("Received message from target:", sid, message);
+      if (sid !== sessionId) {
+        return;
+      }
       try {
         const payload = JSON.parse(message);
-        if (typeof payload.id === "number") {
+        if (payload.method === "Runtime.consoleAPICalled") {
+          const args = payload.params.args ?? [];
+          consoleChain = consoleChain.then(async () => {
+            // Materialize all args (in parallel) preserving ordering
+            const resolved = await Promise.all(
+              args.map((a: any) => materializeArg(a))
+            );
+            logData.push(...resolved);
+          });
+        } else if (typeof payload.id === "number") {
           const r = pending.get(payload.id);
           if (r) {
             pending.delete(payload.id);
             r(payload);
           }
         }
-      } catch {}
+      } catch {
+        console.error("Could not parse message.");
+      }
     };
+    cdp.on("Target.receivedMessageFromTarget", receivedMessageFromTarget);
+    shutdownFns.push(() =>
+      cdp.off("Target.receivedMessageFromTarget", receivedMessageFromTarget)
+    );
 
     const materializeArg = async (a: any) => {
       if ("value" in a) return a.value;
@@ -88,12 +118,7 @@ async function sharedWorkerLogsCapture(
         // Ask the worker to JSON-serialize the object and return it by value
         const resp = await sendToWorker("Runtime.callFunctionOn", {
           objectId: a.objectId,
-          functionDeclaration: `
-function () {
-  try { return JSON.parse(JSON.stringify(this)); }
-  catch (e) { return { __nonSerializable__: true, description: String(this) }; }
-}
-      `,
+          functionDeclaration,
           returnByValue: true,
         });
         return resp?.result?.result?.value;
@@ -101,33 +126,15 @@ function () {
       return a; // fallback
     };
 
-    const onMsg = async ({ sessionId: sid, message }: any) => {
-      console.log("Received message from target:", sid, message);
-      if (sid !== sessionId) return;
-      const m = JSON.parse(message);
-      if (m.method === "Runtime.consoleAPICalled") {
-        const args = m.params.args || [];
-        cdp.off("Target.receivedMessageFromTarget", onMsg);
-        const resolved = [];
-        for (const a of args) resolved.push(await materializeArg(a));
-        resolveWorkerLog(resolved);
-      }
-    };
-    cdp.on("Target.receivedMessageFromTarget", onMsg);
-
     return {
       sendToWorker,
-      receivedMessageFromTarget,
-      materializeArg,
-      workerLogPromise,
     };
   };
 
   waitForSharedWorkerTarget()
     .then(({ targetId }) => attachToSharedWorker(targetId))
     .then(({ sessionId }) => createCommunicationsFns(sessionId))
-    .then(async ({ sendToWorker, receivedMessageFromTarget }) => {
-      cdp.on("Target.receivedMessageFromTarget", receivedMessageFromTarget);
+    .then(async ({ sendToWorker }) => {
       await sendToWorker("Runtime.enable");
       await sendToWorker("Log.enable");
       await sendToWorker("Runtime.runIfWaitingForDebugger");
@@ -136,9 +143,19 @@ function () {
       console.error("Error during SharedWorker handling:", error);
     });
 
-  page.getWorkerLog = () => workerLogPromise;
+  page.getWorkerLog = (clearLog?: boolean) => {
+    const current = [...logData];
+    if (clearLog) {
+      logData.length = 0;
+    }
+    return current;
+  };
   page.getWorkerConnection = () =>
     waitForSharedWorkerTarget().then(() => undefined);
+
+  return () => {
+    shutdownFns.reverse().forEach((fn) => fn());
+  };
 }
 
 export type CaptureOptions = {
@@ -148,7 +165,7 @@ export type CaptureOptions = {
 type CaptureFixtures = {
   page: Page;
   getWorkerConnection: () => Promise<void>;
-  getWorkerLog: () => Promise<any[]>;
+  getWorkerLog: (clearLog?: boolean) => any[];
 };
 
 const test = base.extend<CaptureOptions & CaptureFixtures>({
@@ -161,9 +178,9 @@ const test = base.extend<CaptureOptions & CaptureFixtures>({
     await use(page);
   },
 
-  getWorkerLog: async ({ page }, use) => use(() => page.getWorkerLog()),
+  getWorkerLog: async ({ page }, use) => use(page.getWorkerLog.bind(page)),
   getWorkerConnection: async ({ page }, use) =>
-    use(() => page.getWorkerConnection()),
+    use(page.getWorkerConnection.bind(page)),
 });
 
 export { test, expect };
